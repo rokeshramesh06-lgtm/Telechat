@@ -1,0 +1,5 @@
+node_modules/
+telechat.db
+*.db-wal
+*.db-shm
+.env

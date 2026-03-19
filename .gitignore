@@ -3,3 +3,4 @@ telechat.db
 *.db-wal
 *.db-shm
 .env
+.next/

@@ -1,261 +1,239 @@
-'use client';
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { io } from 'socket.io-client';
-import Sidebar from './Sidebar';
-import ChatArea from './ChatArea';
-import CallScreen from './CallScreen';
-import IncomingCall from './IncomingCall';
+"use client";
+import { useState, useEffect, useRef, useCallback } from "react";
+import Sidebar from "./Sidebar";
+import ChatArea from "./ChatArea";
+import CallScreen from "./CallScreen";
+import IncomingCall from "./IncomingCall";
 
-export default function ChatApp({ user, onLogout }) {
-  const [socket, setSocket] = useState(null);
+export default function ChatApp({ initialUser, onLogout }) {
+  const [user] = useState(initialUser);
   const [conversations, setConversations] = useState([]);
-  const [activeConversation, setActiveConversation] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [typingUser, setTypingUser] = useState(null);
-  const [userStatuses, setUserStatuses] = useState({});
-  const [mobileChat, setMobileChat] = useState(false);
-
-  // Call state
-  const [currentCall, setCurrentCall] = useState(null);
+  const [activeConvId, setActiveConvId] = useState(null);
+  const [messages, setMessages] = useState({});
+  const [callState, setCallState] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
-  const [callStatus, setCallStatus] = useState('');
+  const lastPollTime = useRef(Math.floor(Date.now() / 1000) - 1);
+  const pollIntervalRef = useRef(null);
+  const signalPollRef = useRef(null);
 
-  const activeConvRef = useRef(null);
-  const callRef = useRef(null);
+  // Fetch conversations
+  const fetchConversations = useCallback(async () => {
+    try {
+      const res = await fetch("/api/conversations");
+      const data = await res.json();
+      if (data.conversations) setConversations(data.conversations);
+    } catch {}
+  }, []);
 
-  useEffect(() => { activeConvRef.current = activeConversation; }, [activeConversation]);
-  useEffect(() => { callRef.current = currentCall; }, [currentCall]);
+  // Fetch messages for a conversation
+  const fetchMessages = useCallback(async (convId) => {
+    try {
+      const res = await fetch(`/api/messages?conversationId=${convId}`);
+      const data = await res.json();
+      if (data.messages) {
+        setMessages((prev) => ({ ...prev, [convId]: data.messages }));
+      }
+    } catch {}
+  }, []);
 
-  // Load conversations
-  const loadConversations = useCallback(async () => {
-    const res = await fetch(`/api/conversations?userId=${user.id}`);
-    const data = await res.json();
-    setConversations(data);
-  }, [user.id]);
-
-  // Socket setup
-  useEffect(() => {
-    const s = io();
-    setSocket(s);
-
-    s.emit('user:online', user.id);
-
-    s.on('message:received', (msg) => {
-      setMessages((prev) => {
-        if (activeConvRef.current && msg.conversation_id === activeConvRef.current.id) {
-          if (msg.sender_id !== user.id) {
-            s.emit('message:read', { conversationId: activeConvRef.current.id, userId: user.id });
+  // Poll for new messages
+  const pollMessages = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/messages/poll?since=${lastPollTime.current}`);
+      const data = await res.json();
+      if (data.messages && data.messages.length > 0) {
+        const grouped = {};
+        for (const msg of data.messages) {
+          if (!grouped[msg.conversationId]) grouped[msg.conversationId] = [];
+          grouped[msg.conversationId].push(msg);
+          if (msg.createdAt > lastPollTime.current) {
+            lastPollTime.current = msg.createdAt;
           }
-          return [...prev, msg];
         }
-        return prev;
+
+        setMessages((prev) => {
+          const next = { ...prev };
+          for (const [convId, msgs] of Object.entries(grouped)) {
+            const existing = next[convId] || [];
+            const existingIds = new Set(existing.map((m) => m.id));
+            const newMsgs = msgs.filter((m) => !existingIds.has(m.id));
+            if (newMsgs.length > 0) {
+              next[convId] = [...existing, ...newMsgs];
+            }
+          }
+          return next;
+        });
+
+        fetchConversations();
+      }
+    } catch {}
+  }, [fetchConversations]);
+
+  // Poll for call signals
+  const pollCallSignals = useCallback(async () => {
+    if (callState) return; // Already in a call
+    try {
+      const res = await fetch("/api/calls/signal");
+      const data = await res.json();
+      for (const signal of data.signals || []) {
+        if (signal.signalType === "offer" && !incomingCall && !callState) {
+          setIncomingCall({
+            callerId: signal.callerId,
+            callerName: signal.callerName,
+            callerColor: signal.callerColor,
+            conversationId: signal.conversationId,
+            callType: signal.signalData.sdp?.includes("m=video") ? "video" : "audio",
+            offer: signal.signalData,
+          });
+        }
+      }
+    } catch {}
+  }, [callState, incomingCall]);
+
+  // Initial load
+  useEffect(() => {
+    fetchConversations();
+    pollIntervalRef.current = setInterval(pollMessages, 2000);
+    signalPollRef.current = setInterval(pollCallSignals, 1500);
+
+    return () => {
+      clearInterval(pollIntervalRef.current);
+      clearInterval(signalPollRef.current);
+    };
+  }, [fetchConversations, pollMessages, pollCallSignals]);
+
+  // Load messages when switching conversations
+  useEffect(() => {
+    if (activeConvId && !messages[activeConvId]) {
+      fetchMessages(activeConvId);
+    }
+  }, [activeConvId, messages, fetchMessages]);
+
+  async function handleNewChat(userId) {
+    try {
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
       });
-      loadConversations();
-    });
+      const data = await res.json();
+      if (data.conversationId) {
+        await fetchConversations();
+        setActiveConvId(data.conversationId);
+        fetchMessages(data.conversationId);
+      }
+    } catch {}
+  }
 
-    s.on('user:status', ({ userId, status }) => {
-      setUserStatuses((prev) => ({ ...prev, [userId]: status }));
-    });
+  async function handleSendMessage(content) {
+    if (!activeConvId) return;
+    try {
+      const res = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: activeConvId, content }),
+      });
+      const data = await res.json();
+      if (data.message) {
+        setMessages((prev) => ({
+          ...prev,
+          [activeConvId]: [...(prev[activeConvId] || []), data.message],
+        }));
+        if (data.message.createdAt > lastPollTime.current) {
+          lastPollTime.current = data.message.createdAt;
+        }
+        fetchConversations();
+      }
+    } catch {}
+  }
 
-    s.on('typing:start', ({ conversationId, userName }) => {
-      if (activeConvRef.current?.id === conversationId) setTypingUser(userName);
-    });
-
-    s.on('typing:stop', ({ conversationId }) => {
-      if (activeConvRef.current?.id === conversationId) setTypingUser(null);
-    });
-
-    // Call events
-    s.on('call:incoming', (data) => setIncomingCall(data));
-    s.on('call:initiated', ({ callId }) => {
-      setCurrentCall((prev) => prev ? { ...prev, callId } : prev);
-    });
-    s.on('call:accepted', ({ callId, calleeId }) => {
-      setCallStatus('Connecting...');
-      // Signal to CallScreen to start WebRTC as caller
-      setCurrentCall((prev) => prev ? { ...prev, accepted: true, targetUserId: calleeId } : prev);
-    });
-    s.on('call:rejected', () => {
-      setCallStatus('Call declined');
-      setTimeout(() => { setCurrentCall(null); setCallStatus(''); }, 1500);
-    });
-    s.on('call:unavailable', ({ reason }) => {
-      setCallStatus(reason);
-      setTimeout(() => { setCurrentCall(null); setCallStatus(''); }, 1500);
-    });
-    s.on('call:ended', () => { setCurrentCall(null); setCallStatus(''); });
-
-    // WebRTC signaling — forwarded to CallScreen via state
-    s.on('webrtc:offer', (data) => {
-      setCurrentCall((prev) => prev ? { ...prev, remoteOffer: data } : prev);
-    });
-    s.on('webrtc:answer', (data) => {
-      setCurrentCall((prev) => prev ? { ...prev, remoteAnswer: data } : prev);
-    });
-    s.on('webrtc:ice-candidate', (data) => {
-      setCurrentCall((prev) => prev ? { ...prev, remoteCandidate: { ...data, _ts: Date.now() } } : prev);
-    });
-
-    loadConversations();
-
-    return () => { s.disconnect(); };
-  }, [user.id, loadConversations]);
-
-  // Open conversation
-  const openConversation = async (conv) => {
-    setActiveConversation(conv);
-    setMobileChat(true);
-    setTypingUser(null);
-    const res = await fetch(`/api/messages?conversationId=${conv.id}`);
-    const data = await res.json();
-    setMessages(data);
-    if (socket) socket.emit('message:read', { conversationId: conv.id, userId: user.id });
-    loadConversations();
-  };
-
-  // Send message
-  const sendMessage = (content) => {
-    if (!content.trim() || !activeConversation || !socket) return;
-    socket.emit('message:send', {
-      conversationId: activeConversation.id,
-      senderId: user.id,
-      content,
-      type: 'text',
-    });
-    socket.emit('typing:stop', { conversationId: activeConversation.id, userId: user.id });
-  };
-
-  // Typing
-  const sendTyping = (isTyping) => {
-    if (!activeConversation || !socket) return;
-    socket.emit(isTyping ? 'typing:start' : 'typing:stop', {
-      conversationId: activeConversation.id,
-      userId: user.id,
-      userName: user.displayName,
-    });
-  };
-
-  // Start conversation from search
-  const startConversation = async (otherUser) => {
-    const res = await fetch('/api/conversations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id, otherUserId: otherUser.id }),
-    });
-    const conv = await res.json();
-    await loadConversations();
-    openConversation(conv);
-  };
-
-  // Initiate call
-  const initiateCall = (callType) => {
-    if (!activeConversation || currentCall || !socket) return;
-    const other = activeConversation.members?.find((m) => m.id !== user.id);
+  function handleStartCall(callType) {
+    if (!activeConvId) return;
+    const conv = conversations.find((c) => c.id === activeConvId);
+    if (!conv) return;
+    const other = conv.members?.find((m) => m.id !== user.userId);
     if (!other) return;
 
-    const callData = {
-      callerId: user.id,
+    setCallState({
       calleeId: other.id,
-      callerName: user.displayName,
-      conversationId: activeConversation.id,
+      callerName: other.displayName,
       callType,
-      role: 'caller',
-      otherName: other.display_name,
-      otherColor: other.avatar_color,
-    };
-
-    setCurrentCall(callData);
-    setCallStatus('Calling...');
-    socket.emit('call:initiate', callData);
-  };
-
-  // Accept incoming call
-  const acceptCall = () => {
-    if (!incomingCall || !socket) return;
-    socket.emit('call:accept', {
-      callId: incomingCall.callId,
-      calleeId: user.id,
-      callerId: incomingCall.callerId,
+      isIncoming: false,
+      conversationId: activeConvId,
     });
-    setCurrentCall({
-      ...incomingCall,
-      role: 'callee',
-      otherName: incomingCall.callerName,
-      otherColor: '#0088cc',
-      accepted: true,
-      targetUserId: incomingCall.callerId,
-    });
-    setCallStatus('Connecting...');
-    setIncomingCall(null);
-  };
+  }
 
-  // Decline incoming call
-  const declineCall = () => {
-    if (!incomingCall || !socket) return;
-    socket.emit('call:reject', {
-      callId: incomingCall.callId,
-      callerId: incomingCall.callerId,
-      calleeId: user.id,
+  function handleAcceptCall() {
+    if (!incomingCall) return;
+    setCallState({
+      calleeId: incomingCall.callerId,
+      callerName: incomingCall.callerName,
+      callType: incomingCall.callType,
+      isIncoming: true,
+      conversationId: incomingCall.conversationId,
+      offer: incomingCall.offer,
     });
     setIncomingCall(null);
-  };
+  }
 
-  // End call
-  const endCall = () => {
-    if (!currentCall || !socket) return;
-    const otherUserId = currentCall.role === 'caller' ? currentCall.calleeId : currentCall.callerId;
-    socket.emit('call:end', {
-      callId: currentCall.callId,
-      userId: user.id,
-      otherUserId,
+  function handleRejectCall() {
+    if (!incomingCall) return;
+    fetch("/api/calls/signal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        calleeId: incomingCall.callerId,
+        conversationId: incomingCall.conversationId,
+        signalType: "hangup",
+        signalData: { reason: "rejected" },
+      }),
     });
-    setCurrentCall(null);
-    setCallStatus('');
-  };
+    setIncomingCall(null);
+  }
 
-  // Helper to get other user
-  const getOtherUser = (conv) => conv?.members?.find((m) => m.id !== user.id);
+  async function handleLogout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    onLogout();
+  }
+
+  const activeConv = conversations.find((c) => c.id === activeConvId);
 
   return (
-    <div className={`chat-screen${mobileChat ? ' chat-open' : ''}`}>
+    <div className="app-container">
       <Sidebar
-        user={user}
+        currentUser={user}
         conversations={conversations}
-        activeConversation={activeConversation}
-        userStatuses={userStatuses}
-        onSelectConversation={openConversation}
-        onStartConversation={startConversation}
-        onLogout={onLogout}
+        activeConversation={activeConvId}
+        onSelectConversation={(id) => {
+          setActiveConvId(id);
+          if (!messages[id]) fetchMessages(id);
+        }}
+        onNewChat={handleNewChat}
+        onLogout={handleLogout}
       />
       <ChatArea
-        user={user}
-        conversation={activeConversation}
-        messages={messages}
-        typingUser={typingUser}
-        userStatuses={userStatuses}
-        onSendMessage={sendMessage}
-        onSendTyping={sendTyping}
-        onVoiceCall={() => initiateCall('voice')}
-        onVideoCall={() => initiateCall('video')}
-        onBack={() => setMobileChat(false)}
-        getOtherUser={getOtherUser}
+        conversation={activeConv}
+        messages={messages[activeConvId] || []}
+        currentUser={user}
+        onSendMessage={handleSendMessage}
+        onStartCall={handleStartCall}
       />
 
-      {currentCall && (
+      {callState && (
         <CallScreen
-          call={currentCall}
-          socket={socket}
-          user={user}
-          status={callStatus}
-          onEnd={endCall}
+          callState={callState}
+          currentUser={user}
+          onEndCall={() => setCallState(null)}
         />
       )}
 
-      {incomingCall && (
+      {incomingCall && !callState && (
         <IncomingCall
-          call={incomingCall}
-          onAccept={acceptCall}
-          onDecline={declineCall}
+          callerName={incomingCall.callerName}
+          callerColor={incomingCall.callerColor}
+          callType={incomingCall.callType}
+          onAccept={handleAcceptCall}
+          onReject={handleRejectCall}
         />
       )}
     </div>

@@ -1,193 +1,296 @@
-'use client';
-import { useEffect, useRef, useState } from 'react';
+"use client";
+import { useState, useEffect, useRef, useCallback } from "react";
 
-const rtcConfig = {
+const ICE_SERVERS = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
   ],
 };
 
-export default function CallScreen({ call, socket, user, status, onEnd }) {
-  const [timer, setTimer] = useState('00:00');
-  const [connected, setConnected] = useState(false);
+export default function CallScreen({
+  callState,
+  currentUser,
+  onEndCall,
+}) {
+  const { calleeId, callerName, callType, isIncoming, conversationId } = callState;
+  const [status, setStatus] = useState(isIncoming ? "connecting" : "ringing");
+  const [duration, setDuration] = useState(0);
   const [muted, setMuted] = useState(false);
-  const [videoOff, setVideoOff] = useState(false);
+  const [videoOff, setVideoOff] = useState(callType === "audio");
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const remoteAudioRef = useRef(null);
+  const pollRef = useRef(null);
   const timerRef = useRef(null);
-  const startTimeRef = useRef(null);
-  const setupDoneRef = useRef(false);
+  const connectedRef = useRef(false);
 
-  // Start WebRTC when call is accepted
-  useEffect(() => {
-    if (!call.accepted || setupDoneRef.current) return;
-    setupDoneRef.current = true;
+  const cleanup = useCallback(() => {
+    clearInterval(pollRef.current);
+    clearInterval(timerRef.current);
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    pcRef.current?.close();
+    pcRef.current = null;
+    connectedRef.current = false;
+  }, []);
 
-    const isVideo = call.callType === 'video';
-    const isCaller = call.role === 'caller';
-
-    (async () => {
+  const sendSignal = useCallback(
+    async (signalType, signalData) => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+        await fetch("/api/calls/signal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            calleeId,
+            conversationId,
+            signalType,
+            signalData,
+          }),
+        });
+      } catch (err) {
+        console.error("Signal send error:", err);
+      }
+    },
+    [calleeId, conversationId]
+  );
+
+  const pollSignals = useCallback(async () => {
+    try {
+      const res = await fetch("/api/calls/signal");
+      const data = await res.json();
+
+      for (const signal of data.signals || []) {
+        if (signal.callerId !== calleeId) continue;
+
+        switch (signal.signalType) {
+          case "answer":
+            if (pcRef.current && pcRef.current.signalingState !== "stable") {
+              await pcRef.current.setRemoteDescription(signal.signalData);
+              setStatus("connected");
+              connectedRef.current = true;
+            }
+            break;
+          case "ice-candidate":
+            if (pcRef.current && signal.signalData) {
+              try {
+                await pcRef.current.addIceCandidate(signal.signalData);
+              } catch {}
+            }
+            break;
+          case "hangup":
+            cleanup();
+            onEndCall();
+            break;
+        }
+      }
+    } catch {}
+  }, [calleeId, cleanup, onEndCall]);
+
+  useEffect(() => {
+    async function initCall() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: callType === "video",
+        });
         localStreamRef.current = stream;
-        if (isVideo && localVideoRef.current) {
+        if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
 
-        const pc = new RTCPeerConnection(rtcConfig);
+        const pc = new RTCPeerConnection(ICE_SERVERS);
         pcRef.current = pc;
 
         stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-        pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            socket.emit('webrtc:ice-candidate', {
-              targetUserId: call.targetUserId,
-              candidate: e.candidate,
-              callId: call.callId,
-            });
+        pc.ontrack = (event) => {
+          remoteStreamRef.current = event.streams[0];
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = event.streams[0];
           }
         };
 
-        pc.ontrack = (e) => {
-          if (isVideo && remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = e.streams[0];
-          } else if (remoteAudioRef.current) {
-            remoteAudioRef.current.srcObject = e.streams[0];
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            sendSignal("ice-candidate", event.candidate.toJSON());
           }
-          setConnected(true);
-          startTimeRef.current = Date.now();
-          timerRef.current = setInterval(() => {
-            const s = Math.floor((Date.now() - startTimeRef.current) / 1000);
-            setTimer(`${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`);
-          }, 1000);
         };
 
-        if (isCaller) {
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === "connected") {
+            setStatus("connected");
+            connectedRef.current = true;
+            timerRef.current = setInterval(() => {
+              setDuration((d) => d + 1);
+            }, 1000);
+          }
+          if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+            cleanup();
+            onEndCall();
+          }
+        };
+
+        if (!isIncoming) {
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          socket.emit('webrtc:offer', { targetUserId: call.targetUserId, offer, callId: call.callId });
+          await sendSignal("offer", pc.localDescription.toJSON());
+          setStatus("ringing");
         }
+
+        // Start polling for signals
+        pollRef.current = setInterval(pollSignals, 800);
       } catch (err) {
-        console.error('WebRTC error:', err);
+        console.error("Call init error:", err);
+        setStatus("error");
       }
-    })();
+    }
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [call.accepted, call.callType, call.role, call.targetUserId, call.callId, socket]);
+    initCall();
 
-  // Handle remote offer (for callee)
-  useEffect(() => {
-    if (!call.remoteOffer || !pcRef.current) return;
-    const pc = pcRef.current;
-    (async () => {
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(call.remoteOffer.offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit('webrtc:answer', {
-          targetUserId: call.remoteOffer.fromUserId,
-          answer,
-          callId: call.callId,
-        });
-      } catch (err) {
-        console.error('Error handling offer:', err);
-      }
-    })();
-  }, [call.remoteOffer, call.callId, socket]);
-
-  // Handle remote answer (for caller)
-  useEffect(() => {
-    if (!call.remoteAnswer || !pcRef.current) return;
-    (async () => {
-      try {
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(call.remoteAnswer.answer));
-      } catch (err) {
-        console.error('Error handling answer:', err);
-      }
-    })();
-  }, [call.remoteAnswer]);
-
-  // Handle ICE candidates
-  useEffect(() => {
-    if (!call.remoteCandidate || !pcRef.current) return;
-    (async () => {
-      try {
-        await pcRef.current.addIceCandidate(new RTCIceCandidate(call.remoteCandidate.candidate));
-      } catch (e) { /* ignore */ }
-    })();
-  }, [call.remoteCandidate]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (pcRef.current) pcRef.current.close();
-      if (localStreamRef.current) localStreamRef.current.getTracks().forEach((t) => t.stop());
-      if (timerRef.current) clearInterval(timerRef.current);
-      setupDoneRef.current = false;
-    };
+    return cleanup;
   }, []);
 
-  const toggleMute = () => {
-    if (localStreamRef.current) {
-      const track = localStreamRef.current.getAudioTracks()[0];
-      if (track) { track.enabled = !track.enabled; setMuted(!track.enabled); }
+  // Handle incoming call - set remote description from offer and create answer
+  useEffect(() => {
+    async function handleIncoming() {
+      if (isIncoming && callState.offer && pcRef.current) {
+        try {
+          await pcRef.current.setRemoteDescription(callState.offer);
+          const answer = await pcRef.current.createAnswer();
+          await pcRef.current.setLocalDescription(answer);
+          await sendSignal("answer", pcRef.current.localDescription.toJSON());
+          setStatus("connecting");
+        } catch (err) {
+          console.error("Answer error:", err);
+        }
+      }
     }
-  };
+    const timer = setTimeout(handleIncoming, 500);
+    return () => clearTimeout(timer);
+  }, [isIncoming, callState.offer, sendSignal]);
 
-  const toggleVideo = () => {
-    if (localStreamRef.current) {
-      const track = localStreamRef.current.getVideoTracks()[0];
-      if (track) { track.enabled = !track.enabled; setVideoOff(!track.enabled); }
+  function handleHangup() {
+    sendSignal("hangup", { reason: "user_hangup" });
+    cleanup();
+    onEndCall();
+  }
+
+  function toggleMute() {
+    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      setMuted(!audioTrack.enabled);
     }
-  };
+  }
 
-  const isVideo = call.callType === 'video';
+  function toggleVideo() {
+    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setVideoOff(!videoTrack.enabled);
+    }
+  }
+
+  function formatDuration(s) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+  }
 
   return (
     <div className="call-screen">
-      <div className="call-content">
-        {isVideo && connected && (
-          <div className="remote-video-container">
-            <video ref={remoteVideoRef} autoPlay playsInline />
+      <div className="call-bg" />
+
+      {callType === "video" && (
+        <>
+          <video
+            ref={remoteVideoRef}
+            className="call-remote-video"
+            autoPlay
+            playsInline
+          />
+          <video
+            ref={localVideoRef}
+            className="call-local-video"
+            autoPlay
+            playsInline
+            muted
+          />
+        </>
+      )}
+
+      <div className={`call-info ${callType === "video" ? "video-mode" : ""}`}>
+        {callType === "audio" && (
+          <div className="call-avatar">
+            <div
+              className="avatar call-avatar-circle"
+              style={{ width: 96, height: 96, fontSize: 36, background: "var(--accent)" }}
+            >
+              {(callerName || "?")[0].toUpperCase()}
+            </div>
+            {status === "ringing" && <div className="call-pulse" />}
           </div>
         )}
+        <span className="call-name">{callerName}</span>
+        <span className="call-status">
+          {status === "ringing" && "Ringing..."}
+          {status === "connecting" && "Connecting..."}
+          {status === "connected" && formatDuration(duration)}
+          {status === "error" && "Call failed"}
+        </span>
+      </div>
 
-        <div className="call-avatar" style={{ background: call.otherColor || '#0088cc' }}>
-          {call.otherName?.charAt(0).toUpperCase()}
-        </div>
-        <h2 style={{ color: 'white', fontSize: 24 }}>{call.otherName}</h2>
+      <div className="call-controls">
+        <button
+          className={`call-btn ${muted ? "active" : ""}`}
+          onClick={toggleMute}
+          title={muted ? "Unmute" : "Mute"}
+        >
+          {muted ? (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="1" y1="1" x2="23" y2="23" />
+              <path d="M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6" />
+              <path d="M17 16.95A7 7 0 015 12M19 12a7 7 0 00-.11-1.23" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          ) : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+              <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" />
+            </svg>
+          )}
+        </button>
 
-        {!connected && <p className="call-status-text">{status || 'Calling...'}</p>}
-        {connected && <p className="call-timer">{timer}</p>}
-
-        {isVideo && (
-          <video ref={localVideoRef} className="local-video" autoPlay playsInline muted
-            style={{ display: !videoOff && connected ? 'block' : 'none' }} />
+        {callType === "video" && (
+          <button
+            className={`call-btn ${videoOff ? "active" : ""}`}
+            onClick={toggleVideo}
+            title={videoOff ? "Turn on camera" : "Turn off camera"}
+          >
+            {videoOff ? (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.66 0H14a2 2 0 012 2v3.34l1 1L23 7v10" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            ) : (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+            )}
+          </button>
         )}
 
-        <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
-
-        <div className="call-controls">
-          <button className={`call-control-btn ${muted ? 'active' : ''}`} onClick={toggleMute} title="Mute">
-            <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
-          </button>
-          <button className="call-control-btn end-call" onClick={onEnd} title="End Call">
-            <svg viewBox="0 0 24 24" width="28" height="28"><path fill="white" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
-          </button>
-          {isVideo && (
-            <button className={`call-control-btn ${videoOff ? 'active' : ''}`} onClick={toggleVideo} title="Toggle Video">
-              <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
-            </button>
-          )}
-        </div>
+        <button className="call-btn hangup-btn" onClick={handleHangup} title="End call">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M10.68 13.31a16 16 0 003.41 2.6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91" />
+            <line x1="23" y1="1" x2="1" y2="23" />
+          </svg>
+        </button>
       </div>
     </div>
   );

@@ -1,126 +1,172 @@
-'use client';
-import { useEffect, useRef, useState } from 'react';
+"use client";
+import { useState, useEffect, useRef } from "react";
+import { Avatar } from "./Sidebar";
 
-function formatDate(dateStr) {
-  const date = new Date(dateStr);
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) return 'Today';
-  const y = new Date(now); y.setDate(y.getDate() - 1);
-  if (date.toDateString() === y.toDateString()) return 'Yesterday';
-  return date.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function ChatArea({ user, conversation, messages, typingUser, userStatuses, onSendMessage, onSendTyping, onVoiceCall, onVideoCall, onBack, getOtherUser }) {
-  const [input, setInput] = useState('');
+function formatDateSeparator(ts) {
+  const d = new Date(ts * 1000);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+}
+
+export default function ChatArea({
+  conversation,
+  messages,
+  currentUser,
+  onSendMessage,
+  onStartCall,
+}) {
+  const [input, setInput] = useState("");
   const messagesEndRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (autoScroll) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, autoScroll]);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
-    onSendMessage(input);
-    setInput('');
-  };
+  function handleScroll() {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    setAutoScroll(atBottom);
+  }
 
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  function handleSend(e) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text) return;
+    onSendMessage(text);
+    setInput("");
+    setAutoScroll(true);
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      handleSend(e);
     }
-  };
-
-  const handleInput = (e) => {
-    setInput(e.target.value);
-    if (!typingTimeoutRef.current) {
-      onSendTyping(true);
-    }
-    clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      onSendTyping(false);
-      typingTimeoutRef.current = null;
-    }, 2000);
-  };
+  }
 
   if (!conversation) {
     return (
-      <main className="chat-area">
-        <div className="empty-state">
-          <svg viewBox="0 0 80 80" width="80" height="80">
-            <circle cx="40" cy="40" r="38" fill="none" stroke="#0088cc" strokeWidth="2" opacity="0.3"/>
-            <path d="M25 30h30v4H25zm0 8h20v4H25zm0 8h25v4H25z" fill="#0088cc" opacity="0.3"/>
-          </svg>
-          <h3>Select a chat to start messaging</h3>
-          <p>Or search for users to start a new conversation</p>
+      <div className="chat-area empty-chat">
+        <div className="empty-chat-content">
+          <div className="empty-chat-icon">
+            <svg width="80" height="80" viewBox="0 0 48 48" fill="none">
+              <rect width="48" height="48" rx="14" fill="var(--accent)" opacity="0.15" />
+              <path
+                d="M14 34l2.5-7.5C15.5 24.5 15 22.3 15 20c0-5 4-9 9-9s9 4 9 9-4 9-9 9c-2 0-3.8-.6-5.3-1.6L14 34z"
+                stroke="var(--accent)"
+                strokeWidth="2"
+                fill="none"
+              />
+            </svg>
+          </div>
+          <h2>TeleChat Web</h2>
+          <p>Send and receive messages, make calls, and stay connected.</p>
+          <p className="empty-hint">Select a conversation or search for a user to get started.</p>
         </div>
-      </main>
+      </div>
     );
   }
 
-  const other = getOtherUser(conversation);
-  const status = userStatuses[other?.id] || other?.status;
+  const otherMember = conversation.members?.find((m) => m.id !== currentUser.userId);
 
   // Group messages by date
-  let lastDate = '';
+  let lastDate = null;
 
   return (
-    <main className="chat-area">
-      {/* Header */}
+    <div className="chat-area">
       <div className="chat-header">
-        <button className="icon-btn mobile-only" onClick={onBack}>
-          <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-        </button>
-        <div className="chat-user-info">
-          <div className="avatar" style={{ background: other?.avatar_color }}>
-            {other?.display_name?.charAt(0).toUpperCase()}
-            {status === 'online' && <div className="online-dot" />}
-          </div>
-          <div>
-            <div className="chat-name">{other?.display_name}</div>
-            <div className={`chat-status ${status === 'online' ? 'online' : ''}`}>
-              {status === 'online' ? 'online' : 'offline'}
-            </div>
+        <div className="chat-header-left">
+          <Avatar
+            name={conversation.name}
+            color={conversation.avatarColor}
+            size={40}
+          />
+          <div className="chat-header-info">
+            <span className="chat-header-name">{conversation.name}</span>
+            <span className="chat-header-status">
+              {otherMember &&
+                (Math.floor(Date.now() / 1000) - (otherMember.lastSeen || 0) < 30
+                  ? "online"
+                  : "offline")}
+            </span>
           </div>
         </div>
-        <div className="chat-actions">
-          <button className="icon-btn" title="Voice Call" onClick={onVoiceCall}>
-            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56-.35-.12-.74-.03-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/></svg>
+        <div className="chat-header-right">
+          <button
+            className="icon-btn"
+            title="Voice call"
+            onClick={() => onStartCall("audio")}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z" />
+            </svg>
           </button>
-          <button className="icon-btn" title="Video Call" onClick={onVideoCall}>
-            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+          <button
+            className="icon-btn"
+            title="Video call"
+            onClick={() => onStartCall("video")}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polygon points="23 7 16 12 23 17 23 7" />
+              <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+            </svg>
           </button>
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="messages-container">
+      <div
+        className="messages-container"
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+      >
         <div className="messages-list">
           {messages.map((msg, i) => {
-            const msgDate = new Date(msg.created_at).toLocaleDateString();
-            let dateDivider = null;
+            const msgDate = formatDateSeparator(msg.createdAt);
+            let showDate = false;
             if (msgDate !== lastDate) {
+              showDate = true;
               lastDate = msgDate;
-              dateDivider = (
-                <div className="message-date-divider" key={`date-${msgDate}`}>
-                  <span>{formatDate(msg.created_at)}</span>
-                </div>
-              );
             }
-            const isOutgoing = msg.sender_id === user.id;
-            const time = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            const isOwn = msg.senderId === currentUser.userId;
+            const showTail =
+              i === messages.length - 1 ||
+              messages[i + 1]?.senderId !== msg.senderId;
 
             return (
-              <div key={msg.id || i}>
-                {dateDivider}
-                <div className={`message ${isOutgoing ? 'outgoing' : 'incoming'}`}>
+              <div key={msg.id}>
+                {showDate && (
+                  <div className="date-separator">
+                    <span>{msgDate}</span>
+                  </div>
+                )}
+                <div className={`message ${isOwn ? "message-out" : "message-in"} ${showTail ? "with-tail" : ""}`}>
                   <div className="message-bubble">
-                    {!isOutgoing && (
-                      <div className="message-sender" style={{ color: msg.sender_color }}>{msg.sender_name}</div>
-                    )}
-                    <div className="message-text">{msg.content}</div>
-                    <div className="message-time">{time}</div>
+                    <span className="message-text">{msg.content}</span>
+                    <span className="message-meta">
+                      <span className="message-time">{formatTime(msg.createdAt)}</span>
+                      {isOwn && (
+                        <svg className="message-check" width="16" height="11" viewBox="0 0 16 11">
+                          <path d="M11.071.653a.457.457 0 0 0-.304-.102.493.493 0 0 0-.381.178l-6.19 7.636-2.011-2.095a.46.46 0 0 0-.327-.153.457.457 0 0 0-.334.135.52.52 0 0 0 0 .724l2.343 2.442a.46.46 0 0 0 .312.168h.038a.46.46 0 0 0 .312-.143l6.541-8.065a.477.477 0 0 0 .001-.725z" fill="var(--accent)" />
+                        </svg>
+                      )}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -130,29 +176,23 @@ export default function ChatArea({ user, conversation, messages, typingUser, use
         </div>
       </div>
 
-      {/* Typing */}
-      {typingUser && (
-        <div className="typing-indicator">
-          <span>{typingUser}</span> is typing
-          <span className="typing-dots"><span>.</span><span>.</span><span>.</span></span>
-        </div>
-      )}
-
-      {/* Input */}
-      <div className="message-input-area">
-        <div className="input-wrapper">
+      <form className="message-input-container" onSubmit={handleSend}>
+        <div className="message-input-box">
           <textarea
-            placeholder="Message"
-            rows="1"
+            className="message-input"
+            placeholder="Type a message"
             value={input}
-            onChange={handleInput}
+            onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            rows={1}
           />
-          <button className="icon-btn send-btn" onClick={handleSend}>
-            <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          </button>
         </div>
-      </div>
-    </main>
+        <button type="submit" className="send-btn" disabled={!input.trim()}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </form>
+    </div>
   );
 }

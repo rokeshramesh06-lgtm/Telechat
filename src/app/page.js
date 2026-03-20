@@ -1,32 +1,46 @@
-'use client';
-import { useState, useEffect } from 'react';
-import AuthScreen from '../components/AuthScreen';
-import ChatApp from '../components/ChatApp';
+"use client";
+import { useState, useEffect } from "react";
+import AuthScreen from "@/components/AuthScreen";
+import ChatApp from "@/components/ChatApp";
 
 export default function Home() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const saved = localStorage.getItem('telechat_user');
-    if (saved) {
-      try { setUser(JSON.parse(saved)); } catch (e) { localStorage.removeItem('telechat_user'); }
-    }
-    setLoading(false);
+    fetch("/api/auth/me")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.user) setUser(data.user);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
-  const handleLogin = (userData) => {
-    setUser(userData);
-    localStorage.setItem('telechat_user', JSON.stringify(userData));
-  };
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-logo">
+          <svg width="64" height="64" viewBox="0 0 48 48" fill="none">
+            <rect width="48" height="48" rx="14" fill="#00a884" />
+            <path
+              d="M14 34l2.5-7.5C15.5 24.5 15 22.3 15 20c0-5 4-9 9-9s9 4 9 9-4 9-9 9c-2 0-3.8-.6-5.3-1.6L14 34z"
+              stroke="white"
+              strokeWidth="2"
+              fill="none"
+            />
+            <path d="M20 19h8M20 23h5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </div>
+        <div className="loading-spinner" />
+        <span className="loading-text">TeleChat</span>
+      </div>
+    );
+  }
 
-  const handleLogout = () => {
-    setUser(null);
-    localStorage.removeItem('telechat_user');
-  };
+  if (!user) {
+    return <AuthScreen onAuth={setUser} />;
+  }
 
-  if (loading) return null;
-
-  if (!user) return <AuthScreen onLogin={handleLogin} />;
-  return <ChatApp user={user} onLogout={handleLogout} />;
+  return <ChatApp initialUser={user} onLogout={() => setUser(null)} />;
 }

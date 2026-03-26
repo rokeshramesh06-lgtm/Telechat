@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { getDb, now } from "@/lib/db";
+import { ensureDb, now } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 export async function GET() {
@@ -9,7 +9,7 @@ export async function GET() {
   }
 
   // Update last seen
-  const db = getDb();
+  const db = await ensureDb();
   await db.execute({
     sql: "UPDATE users SET last_seen = ? WHERE id = ?",
     args: [now(), session.userId],

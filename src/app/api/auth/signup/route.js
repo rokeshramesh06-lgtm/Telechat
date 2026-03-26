@@ -1,4 +1,4 @@
-import { getDb, now } from "@/lib/db";
+import { ensureDb, now } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
@@ -25,7 +25,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
     }
 
-    const db = getDb();
+    const db = await ensureDb();
 
     // Check if username exists
     const existing = await db.execute({

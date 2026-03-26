@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { getDb } from "@/lib/db";
+import { ensureDb } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 // Poll for new messages across all conversations
@@ -12,7 +12,7 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const since = searchParams.get("since") || "0";
 
-  const db = getDb();
+  const db = await ensureDb();
 
   const result = await db.execute({
     sql: `SELECT m.*, u.username, u.display_name, u.avatar_color

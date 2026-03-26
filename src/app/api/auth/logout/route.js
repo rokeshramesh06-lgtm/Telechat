@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { getDb } from "@/lib/db";
+import { ensureDb } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 export async function POST() {
@@ -7,7 +7,7 @@ export async function POST() {
   const sessionId = cookieStore.get("session_id")?.value;
 
   if (sessionId) {
-    const db = getDb();
+    const db = await ensureDb();
     await db.execute({ sql: "DELETE FROM sessions WHERE id = ?", args: [sessionId] });
     cookieStore.delete("session_id");
   }

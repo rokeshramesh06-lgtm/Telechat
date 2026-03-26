@@ -1,4 +1,4 @@
-import { getDb, now } from "@/lib/db";
+import { ensureDb, now } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
@@ -12,7 +12,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Username and password are required" }, { status: 400 });
     }
 
-    const db = getDb();
+    const db = await ensureDb();
 
     const result = await db.execute({
       sql: "SELECT * FROM users WHERE username = ?",

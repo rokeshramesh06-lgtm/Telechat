@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { getDb } from "@/lib/db";
+import { ensureDb } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 export async function GET(request) {
@@ -15,7 +15,7 @@ export async function GET(request) {
     return NextResponse.json({ users: [] });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
   const result = await db.execute({
     sql: "SELECT id, username, display_name, avatar_color, status_text, last_seen FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND id != ? LIMIT 20",
     args: [`%${query}%`, `%${query}%`, session.userId],

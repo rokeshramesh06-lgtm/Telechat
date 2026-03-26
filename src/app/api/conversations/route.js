@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { getDb } from "@/lib/db";
+import { ensureDb } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import { NextResponse } from "next/server";
 
@@ -10,7 +10,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
 
   const result = await db.execute({
     sql: `SELECT c.id, c.is_group, c.name, c.created_at,
@@ -70,7 +70,7 @@ export async function POST(request) {
     return NextResponse.json({ error: "userId is required" }, { status: 400 });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
 
   // Check if DM conversation already exists between these two users
   const existing = await db.execute({

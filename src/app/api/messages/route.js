@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { getDb } from "@/lib/db";
+import { ensureDb } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import { NextResponse } from "next/server";
 
@@ -17,7 +17,7 @@ export async function GET(request) {
     return NextResponse.json({ error: "conversationId is required" }, { status: 400 });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
 
   // Verify user is member of conversation
   const member = await db.execute({
@@ -65,7 +65,7 @@ export async function POST(request) {
     return NextResponse.json({ error: "conversationId and content are required" }, { status: 400 });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
 
   // Verify membership
   const member = await db.execute({

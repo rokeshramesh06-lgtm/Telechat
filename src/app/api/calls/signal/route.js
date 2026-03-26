@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { getDb } from "@/lib/db";
+import { ensureDb } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import { NextResponse } from "next/server";
 
@@ -10,7 +10,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
 
   const result = await db.execute({
     sql: `SELECT cs.*, u.display_name as caller_name, u.avatar_color as caller_color
@@ -60,7 +60,7 @@ export async function POST(request) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
   }
 
-  const db = getDb();
+  const db = await ensureDb();
   const signalId = uuid();
 
   await db.execute({

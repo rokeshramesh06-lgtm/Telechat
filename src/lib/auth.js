@@ -1,4 +1,4 @@
-import { getDb, now } from "./db";
+import { ensureDb, now } from "./db";
 import { cookies } from "next/headers";
 
 export async function getSession() {
@@ -6,7 +6,7 @@ export async function getSession() {
   const sessionId = cookieStore.get("session_id")?.value;
   if (!sessionId) return null;
 
-  const db = getDb();
+  const db = await ensureDb();
   const result = await db.execute({
     sql: "SELECT s.*, u.id as uid, u.username, u.display_name, u.avatar_color, u.status_text FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = ? AND s.expires_at > ?",
     args: [sessionId, now()],

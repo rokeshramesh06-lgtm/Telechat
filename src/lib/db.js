@@ -1,15 +1,32 @@
 import { createClient } from "@libsql/client";
-import path from "path";
 
 let client = null;
+let initialized = false;
 
 export function getDb() {
   if (!client) {
-    const dbPath = path.join(process.cwd(), "telechat.db");
-    client = createClient({ url: `file:${dbPath}` });
-    initDb(client);
+    // Use Turso cloud DB in production, local file in dev
+    if (process.env.TURSO_DATABASE_URL) {
+      client = createClient({
+        url: process.env.TURSO_DATABASE_URL,
+        authToken: process.env.TURSO_AUTH_TOKEN,
+      });
+    } else {
+      const path = require("path");
+      const dbPath = path.join(process.cwd(), "telechat.db");
+      client = createClient({ url: `file:${dbPath}` });
+    }
   }
   return client;
+}
+
+export async function ensureDb() {
+  const db = getDb();
+  if (!initialized) {
+    await initDb(db);
+    initialized = true;
+  }
+  return db;
 }
 
 async function initDb(db) {

@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { ensureDb } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 export async function GET(request) {
@@ -15,13 +15,16 @@ export async function GET(request) {
     return NextResponse.json({ users: [] });
   }
 
-  const db = await ensureDb();
-  const result = await db.execute({
-    sql: "SELECT id, username, display_name, avatar_color, status_text, last_seen FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND id != ? LIMIT 20",
-    args: [`%${query}%`, `%${query}%`, session.userId],
-  });
+  const db = getDb();
 
-  const users = result.rows.map((r) => ({
+  const { data } = await db
+    .from("users")
+    .select("id, username, display_name, avatar_color, status_text, last_seen")
+    .neq("id", session.userId)
+    .or(`username.ilike.%${query}%,display_name.ilike.%${query}%`)
+    .limit(20);
+
+  const users = (data || []).map((r) => ({
     id: r.id,
     username: r.username,
     displayName: r.display_name,

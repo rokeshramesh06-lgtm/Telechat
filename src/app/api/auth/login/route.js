@@ -1,4 +1,4 @@
-import { ensureDb, now } from "@/lib/db";
+import { getDb, now } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
@@ -12,37 +12,34 @@ export async function POST(request) {
       return NextResponse.json({ error: "Username and password are required" }, { status: 400 });
     }
 
-    const db = await ensureDb();
+    const db = getDb();
 
-    const result = await db.execute({
-      sql: "SELECT * FROM users WHERE username = ?",
-      args: [username.toLowerCase()],
-    });
+    const { data: user } = await db
+      .from("users")
+      .select("*")
+      .eq("username", username.toLowerCase())
+      .single();
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return NextResponse.json({ error: "Invalid username or password" }, { status: 401 });
     }
 
-    const user = result.rows[0];
     const valid = await bcrypt.compare(password, user.password_hash);
 
     if (!valid) {
       return NextResponse.json({ error: "Invalid username or password" }, { status: 401 });
     }
 
-    // Update last seen
-    await db.execute({
-      sql: "UPDATE users SET last_seen = ? WHERE id = ?",
-      args: [now(), user.id],
-    });
+    await db.from("users").update({ last_seen: now() }).eq("id", user.id);
 
-    // Create session
     const sessionId = uuid();
     const expiresAt = now() + 60 * 60 * 24 * 30;
 
-    await db.execute({
-      sql: "INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-      args: [sessionId, user.id, expiresAt],
+    await db.from("sessions").insert({
+      id: sessionId,
+      user_id: user.id,
+      created_at: now(),
+      expires_at: expiresAt,
     });
 
     const cookieStore = await cookies();

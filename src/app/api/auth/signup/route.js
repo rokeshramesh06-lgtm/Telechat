@@ -1,4 +1,4 @@
-import { ensureDb, now } from "@/lib/db";
+import { getDb, now } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
@@ -25,15 +25,15 @@ export async function POST(request) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
     }
 
-    const db = await ensureDb();
+    const db = getDb();
 
-    // Check if username exists
-    const existing = await db.execute({
-      sql: "SELECT id FROM users WHERE username = ?",
-      args: [username.toLowerCase()],
-    });
+    const { data: existing } = await db
+      .from("users")
+      .select("id")
+      .eq("username", username.toLowerCase())
+      .single();
 
-    if (existing.rows.length > 0) {
+    if (existing) {
       return NextResponse.json({ error: "Username already taken" }, { status: 409 });
     }
 
@@ -41,18 +41,28 @@ export async function POST(request) {
     const passwordHash = await bcrypt.hash(password, 10);
     const avatarColor = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
 
-    await db.execute({
-      sql: "INSERT INTO users (id, username, display_name, password_hash, avatar_color) VALUES (?, ?, ?, ?, ?)",
-      args: [userId, username.toLowerCase(), displayName, passwordHash, avatarColor],
+    const { error: insertErr } = await db.from("users").insert({
+      id: userId,
+      username: username.toLowerCase(),
+      display_name: displayName,
+      password_hash: passwordHash,
+      avatar_color: avatarColor,
+      created_at: now(),
     });
 
-    // Create session
-    const sessionId = uuid();
-    const expiresAt = now() + 60 * 60 * 24 * 30; // 30 days
+    if (insertErr) {
+      console.error("Insert user error:", insertErr);
+      return NextResponse.json({ error: "Failed to create account" }, { status: 500 });
+    }
 
-    await db.execute({
-      sql: "INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)",
-      args: [sessionId, userId, expiresAt],
+    const sessionId = uuid();
+    const expiresAt = now() + 60 * 60 * 24 * 30;
+
+    await db.from("sessions").insert({
+      id: sessionId,
+      user_id: userId,
+      created_at: now(),
+      expires_at: expiresAt,
     });
 
     const cookieStore = await cookies();

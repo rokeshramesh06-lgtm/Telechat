@@ -1,9 +1,8 @@
 import { getSession } from "@/lib/auth";
-import { ensureDb } from "@/lib/db";
+import { getDb, now } from "@/lib/db";
 import { v4 as uuid } from "uuid";
 import { NextResponse } from "next/server";
 
-// Get messages for a conversation
 export async function GET(request) {
   const session = await getSession();
   if (!session) {
@@ -17,42 +16,51 @@ export async function GET(request) {
     return NextResponse.json({ error: "conversationId is required" }, { status: 400 });
   }
 
-  const db = await ensureDb();
+  const db = getDb();
 
-  // Verify user is member of conversation
-  const member = await db.execute({
-    sql: "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?",
-    args: [conversationId, session.userId],
-  });
+  // Verify membership
+  const { data: member } = await db
+    .from("conversation_members")
+    .select("user_id")
+    .eq("conversation_id", conversationId)
+    .eq("user_id", session.userId)
+    .single();
 
-  if (member.rows.length === 0) {
+  if (!member) {
     return NextResponse.json({ error: "Not a member" }, { status: 403 });
   }
 
-  const result = await db.execute({
-    sql: `SELECT m.*, u.username, u.display_name, u.avatar_color
-          FROM messages m
-          JOIN users u ON m.sender_id = u.id
-          WHERE m.conversation_id = ?
-          ORDER BY m.created_at ASC`,
-    args: [conversationId],
-  });
+  const { data: msgs } = await db
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
 
-  const messages = result.rows.map((r) => ({
-    id: r.id,
-    conversationId: r.conversation_id,
-    senderId: r.sender_id,
-    senderName: r.display_name,
-    senderColor: r.avatar_color,
-    content: r.content,
-    messageType: r.message_type,
-    createdAt: r.created_at,
+  // Get sender details
+  const senderIds = [...new Set((msgs || []).map((m) => m.sender_id))];
+  const { data: senders } = senderIds.length > 0
+    ? await db.from("users").select("id, username, display_name, avatar_color").in("id", senderIds)
+    : { data: [] };
+
+  const senderMap = {};
+  for (const s of senders || []) {
+    senderMap[s.id] = s;
+  }
+
+  const messages = (msgs || []).map((m) => ({
+    id: m.id,
+    conversationId: m.conversation_id,
+    senderId: m.sender_id,
+    senderName: senderMap[m.sender_id]?.display_name || "Unknown",
+    senderColor: senderMap[m.sender_id]?.avatar_color || "#00a884",
+    content: m.content,
+    messageType: m.message_type,
+    createdAt: m.created_at,
   }));
 
   return NextResponse.json({ messages });
 }
 
-// Send a message
 export async function POST(request) {
   const session = await getSession();
   if (!session) {
@@ -65,24 +73,30 @@ export async function POST(request) {
     return NextResponse.json({ error: "conversationId and content are required" }, { status: 400 });
   }
 
-  const db = await ensureDb();
+  const db = getDb();
 
   // Verify membership
-  const member = await db.execute({
-    sql: "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?",
-    args: [conversationId, session.userId],
-  });
+  const { data: member } = await db
+    .from("conversation_members")
+    .select("user_id")
+    .eq("conversation_id", conversationId)
+    .eq("user_id", session.userId)
+    .single();
 
-  if (member.rows.length === 0) {
+  if (!member) {
     return NextResponse.json({ error: "Not a member" }, { status: 403 });
   }
 
   const messageId = uuid();
-  const createdAt = Math.floor(Date.now() / 1000);
+  const createdAt = now();
 
-  await db.execute({
-    sql: "INSERT INTO messages (id, conversation_id, sender_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
-    args: [messageId, conversationId, session.userId, content, createdAt],
+  await db.from("messages").insert({
+    id: messageId,
+    conversation_id: conversationId,
+    sender_id: session.userId,
+    content,
+    message_type: "text",
+    created_at: createdAt,
   });
 
   return NextResponse.json({

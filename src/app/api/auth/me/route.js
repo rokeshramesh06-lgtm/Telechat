@@ -1,5 +1,5 @@
 import { getSession } from "@/lib/auth";
-import { ensureDb, now } from "@/lib/db";
+import { getDb, now } from "@/lib/db";
 import { NextResponse } from "next/server";
 
 export async function GET() {
@@ -8,12 +8,8 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  // Update last seen
-  const db = await ensureDb();
-  await db.execute({
-    sql: "UPDATE users SET last_seen = ? WHERE id = ?",
-    args: [now(), session.userId],
-  });
+  const db = getDb();
+  await db.from("users").update({ last_seen: now() }).eq("id", session.userId);
 
   return NextResponse.json({ user: session });
 }
